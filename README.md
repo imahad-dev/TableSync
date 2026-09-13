@@ -1,4 +1,4 @@
-# TableSync: Dual-Arm Robotic Manipulation in MuJoCo
+﻿# TableSync: Dual-Arm Robotic Manipulation in MuJoCo
 
 **TableSync** is a bimanual manipulation framework for coordinated multi-arm desktop manipulation tasks in simulated physics. It enforces a strict, type-safe boundary between high-level multimodal reasoning (Gemini API emitting structured Pydantic plans) and deterministic low-level physical execution (damped least-squares inverse kinematics, waypoint generation, and contact-state verification over MuJoCo physics).
 
@@ -237,7 +237,7 @@ To stress-test the kinematic execution pipeline beyond nominal conditions, [`eva
    - Plate pick height gains consistently exceeded $+10\,\text{cm}$ ($\ge 4.5\,\text{cm}$ threshold), plate placements achieved $> 6.5\,\text{cm}$ displacements ($\ge 5.0\,\text{cm}$ threshold), and spoon pick height gains exceeded $+10\,\text{cm}$ ($\ge 5.0\,\text{cm}$ threshold).
 2. **Inter-Arm Transfer (Step 4)**:
    - **Grip Dwell Verification Failure (6/10 seeds: 56, 70, 77, 84, 98, 105)**: Because Arm B holds the spoon capsule with varying friction from a perturbed initial pick point, minor angular tilt accumulates during the transfer to `ho_target`. Arm A approaches the nominal handoff waypoint, but its fingertips sit $23.5\text{--}29.7\,\text{mm}$ offset from the spoon handle, resulting in 0 contact frames and triggering an immediate, clean abort.
-   - **Transfer Slip on Release (2/10 seeds: 42, 49)**: In seeds 42 and 49, Arm A established normal contact and confirmed the full 10-frame dwell (`HandoffPhase.GRIP_CONFIRMED`). However, under perturbed contact friction, the pinch on the curved capsule handle slipped when Arm B opened its jaws, dropping the spoon to the table and failing the lift assertion ($\Delta z = 0.0002\,\text{m} < 0.050\,\text{m}$).
+   - **Insufficient Grasp Force Margin (2/10 seeds: 42, 49)**: In seeds 42 and 49, Arm A established normal contact and confirmed the full 10-frame dwell (`HandoffPhase.GRIP_CONFIRMED`). However, under reduced object-surface friction (the harness perturbs `plate_dish`, `plate_rim_edge`, `spoon_base`, and `spoon_handle` geom friction, not the table), the fingertip pinch on the curved capsule handle could not sustain the vertical lift force when Arm B opened its jaws, dropping the spoon to the table and failing the lift assertion ($\Delta z = 0.0002\,\text{m} < 0.050\,\text{m}$).
 3. **Engineering Significance**:
    - The contract architecture operated exactly as designed: **in all 6 dwell failures, Arm B refused to open its jaws**, cleanly aborting the transfer and preventing catastrophic drop events. This demonstrates that type-safe contact contracts protect against physical damage under open-loop kinematic execution.
 
