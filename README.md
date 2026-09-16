@@ -1,4 +1,4 @@
-﻿# TableSync: Dual-Arm Robotic Manipulation in MuJoCo
+# TableSync: Dual-Arm Robotic Manipulation in MuJoCo
 
 **TableSync** is a bimanual manipulation framework for coordinated multi-arm desktop manipulation tasks in simulated physics. It enforces a strict, type-safe boundary between high-level multimodal reasoning (Gemini API emitting structured Pydantic plans) and deterministic low-level physical execution (damped least-squares inverse kinematics, waypoint generation, and contact-state verification over MuJoCo physics).
 
@@ -70,6 +70,21 @@ During initial phases, TableSync evaluated a pretrained imitation learning polic
 
 Rather than introducing brittle visual heuristics or non-transferable domain adapters, TableSync pivoted to a deterministic, mathematically grounded execution layer powered by `so101_nexus.kinematics` and explicit physical validation.
 
+### Note on Inverse Kinematics vs. Learned Policy Control (Challenge Guidance Alignment)
+
+The hackathon organizers explicitly clarified the architectural expectation:
+> *"VLA is a key component we are expecting. However, you can combine a simpler VLA with more complex VLM. Inverse kinematics is not preferable for this challenge, if that is a dominant part of robot control."*
+
+To maintain rigorous technical transparency, we explicitly document this architectural tradeoff:
+
+1. **Initial VLA Exploration & Empirical Failure**: We evaluated a pretrained Action Chunking with Transformers (ACT) policy first ([Section 2](#2-phase-03-policy-evaluation-an-honest-negative-result)). Rather than a hypothetical concern, our baseline testing encountered an empirically measured sim-to-real visual domain gap ($z$-scores within standard bounds, yet zero vertical lift actuation) compounded by STS3215 actuator mapping divergence in MuJoCo.
+2. **Deliberate, Time-Boxed Engineering Tradeoff**: Given the strict hackathon submission deadline, rather than pursuing open-ended, ungrounded policy fine-tuning or opaque visual adapters, we made the conscious decision to anchor low-level execution in deterministic damped least-squares (DLS) inverse kinematics (`so101_nexus.kinematics`). This was adopted as a structured engineering baseline with the design goals of contact-verified bimanual handoffs and repeatable task completion under nominal conditions, while empirical robustness testing revealed key kinematic and contact limitations documented in Section 6.
+3. **The Natural Next Step (Hybrid Hierarchical Control)**: In practical industrial and assistive robotics, pure end-to-end VLA often lacks hard contact safety bounds during multi-arm transfer. The natural extension of TableSync is a **hybrid hierarchical architecture**:
+   - **High-Level VLM (Gemini Multimodal)**: Task decomposition, scene grounding, and subtask dependency planning.
+   - **Mid-Level Kinematics (DLS IK)**: Collision-free macroscopic reaching, approach corridors, and inter-arm staging.
+   - **Low-Level VLA Residual Policy**: A lightweight learned policy operating as a residual controller ($\Delta \vec{x}_{\text{residual}}$) for compliant finger engagement, rim edge pinching, and fine contact alignment.
+4. **Physical AI Studio Ecosystem**: We actively monitored Intel's [Physical AI Studio](https://github.com/open-edge-platform/physical-ai-studio), recommended by organizers for training and deploying OpenVINO-accelerated VLA models. While we recognized its utility for end-to-end policy export, adopting a full retraining loop was infeasible within the remaining timeline; we document our awareness of the tool without overstating our engagement with it.
+
 ---
 
 ## 3. Physical Workspace & Kinematic Geometry Audit
@@ -100,6 +115,19 @@ The simulated spoon is modeled as a composite body comprising a weighted flat ci
 **Flat Placement Evaluation**: We experimentally evaluated releasing the spoon horizontally so that it lies flat on the tabletop. Because both the pedestal base and handle are radially symmetric with zero flat longitudinal facets, releasing the spoon horizontally causes it to roll dynamically under residual momentum across the low-friction tabletop, inducing uncontrolled drift, risking table-edge fall-off, and disturbing the placed plate. 
 
 **Accepted Engineering Choice**: Consequently, TableSync accepts upright pedestal placement on the spoon's flat $36\,\text{mm}$ circular base as a known design choice. This guarantees immediate static rest without rolling, consistent clearance from the placed plate ($3.97\,\text{cm}$ rim clearance), verified zero object-to-object contacts, and reliable camera framing.
+
+#### Accepted Known Limitation: Single-Gripper Capacity & Uncommanded Object Drops
+In the end-to-end multimodal pipeline demonstration, when an operator instruction requests picking an object and subsequently transferring another without an explicit table placement directive (e.g., *"Pick up the plate and hand the spoon"*), the reasoning layer generates a 4-subtask plan: `[arm_a pick plate] -> [arm_b pick spoon] -> [arm_b handoff_extend] -> [arm_a handoff_receive]`.
+
+**Physical Manifestation During Execution**:
+Each SO-101 arm possesses exactly one two-finger parallel jaw gripper. Arm A successfully lifts the plate at Step 0 ($\Delta z = +10.69\,\text{cm}$ gain, elevated to $z = 0.3068\,\text{m}$, 18 active contact points) and holds it stably in mid-air through Steps 1 and 2. However, at Step 3 (`handoff_receive`), Arm A's staging waypoint commands its gripper to open (`ctrl = 1.2`) to prepare to receive the incoming spoon from Arm B. Because Arm A is still clutching the plate and no intermediate `place` step was commanded, opening the jaws releases the plate under gravity:
+- The plate detaches at control step 20 of `ho_stage` ($\approx 0.10\,\text{s}$ into Step 3).
+- The plate falls vertically $10.7\,\text{cm}$ back to the table surface, settling flat at $[-0.0798, 0.0649, 0.19995]\,\text{m}$ (within $5.1\,\text{mm}$ of its starting coordinates).
+
+**Underlying Architectural Gap**:
+Currently, neither the VLM reasoning prompt nor `TableSyncController` enforces a single-object-per-gripper precondition guard. The controller assumes each requested subtask has valid operational preconditions and executes open-loop gripper commands without asserting whether the target gripper is already holding an unreleased object. In physical deployment, this scenario must be blocked by both:
+1. An active hardware safety interlock in `controller.py` that raises an execution fault (`SubtaskStatus.FAILED`) if a gripper is commanded to open while holding a different object without prior placement.
+2. Explicit gripper state tracking in `gemini_planner.py` / `contracts.py` ensuring the planner inserts an intermediate `place` subtask before repurposing an occupied arm.
 
 ### Workspace Corrections Implemented in `compose_scene.py`
 1. **Arm Base Mounting Height**: Arm bases were raised from ground level ($z = 0.0$) to tabletop surface level ($z = 0.20\,\text{m}$), positioning shoulder joints at $z = 0.262\,\text{m}$ and eliminating table-edge forearm scraping.
@@ -204,6 +232,9 @@ Following Subtask 5 completion, a high-resolution frame was rendered from the ov
 
 To stress-test the kinematic execution pipeline beyond nominal conditions, [`eval/robustness_harness.py`](file:///eval/robustness_harness.py) evaluates the complete 6-subtask sequence across 10 randomized seeds using the exact same physical success criteria:
 
+> [!NOTE]
+> **Methodology Note (Prompt vs. Physical Variation)**: While hackathon robustness guidance encompasses prompt phrasing variations as well as environment perturbations, TableSync's 10-seed automated Monte Carlo harness focuses strictly on physical perturbations (object coordinates, surface friction coefficients, and lighting intensity/placement). Prompt phrasing diversity was evaluated via end-to-end multimodal planner verification rather than within the scripted physical seed matrix, given the build timeline.
+
 ### Perturbation Categories
 1. **Object Starting $(x, y)$ Positions**:
    - Plate initial position: perturbed by $\pm 5.0\,\text{mm}$ along $x$ and $y$ within the table surface.
@@ -238,6 +269,7 @@ To stress-test the kinematic execution pipeline beyond nominal conditions, [`eva
 2. **Inter-Arm Transfer (Step 4)**:
    - **Grip Dwell Verification Failure (6/10 seeds: 56, 70, 77, 84, 98, 105)**: Because Arm B holds the spoon capsule with varying friction from a perturbed initial pick point, minor angular tilt accumulates during the transfer to `ho_target`. Arm A approaches the nominal handoff waypoint, but its fingertips sit $23.5\text{--}29.7\,\text{mm}$ offset from the spoon handle, resulting in 0 contact frames and triggering an immediate, clean abort.
    - **Insufficient Grasp Force Margin (2/10 seeds: 42, 49)**: In seeds 42 and 49, Arm A established normal contact and confirmed the full 10-frame dwell (`HandoffPhase.GRIP_CONFIRMED`). However, under reduced object-surface friction (the harness perturbs `plate_dish`, `plate_rim_edge`, `spoon_base`, and `spoon_handle` geom friction, not the table), the fingertip pinch on the curved capsule handle could not sustain the vertical lift force when Arm B opened its jaws, dropping the spoon to the table and failing the lift assertion ($\Delta z = 0.0002\,\text{m} < 0.050\,\text{m}$).
+   - **Post-Handoff Grip Slip Under Indefinite Hold**: A forensic audit of the multimodal pipeline identified a precise physical mechanism: an arm holding an object indefinitely without a subsequent `PLACE` subtask will eventually experience slip under gravity after a sustained hold ($\approx 40$ simulation steps observed). Because the horizontal pinch grasp on a smooth cylindrical capsule relies entirely on Coulomb frictional shear without interlocking geometry or compliant padding, micro-vibrations and actuator jitter gradually exceed the static friction cone. This is why every task sequence in this project—the nominal 6-subtask run, the robustness harness, and the final demo instruction—is deliberately designed to terminate with an explicit, stable tabletop placement rather than an open-ended mid-air hold. This is a documented, understood physical limitation that our task planning deliberately designs around, rather than a resolved mechanical property.
 3. **Engineering Significance**:
    - The contract architecture operated exactly as designed: **in all 6 dwell failures, Arm B refused to open its jaws**, cleanly aborting the transfer and preventing catastrophic drop events. This demonstrates that type-safe contact contracts protect against physical damage under open-loop kinematic execution.
 
@@ -266,6 +298,18 @@ To execute the 10-seed perturbed robustness suite:
 python eval/robustness_harness.py
 ```
 This runs the full 10-seed matrix, logging per-seed metrics and printing the comprehensive robustness report.
+
+### Run Voice Transcription
+To transcribe a spoken operator command into planner-ready text via the Speechmatics Real-Time API:
+```bash
+export SPEECHMATICS_API_KEY="your-api-key-here"
+python voice_transcriber.py path/to/command.wav
+```
+The input `.wav` file must be **mono (1 channel), 16 kHz, 16-bit PCM**. To convert from other formats:
+```bash
+ffmpeg -i input.m4a -ac 1 -ar 16000 command.wav
+```
+The script prints the transcribed text and average per-token confidence score, then exits. The returned string is the `raw_instruction` that feeds directly into `PlannerOutput` construction.
 
 ---
 
@@ -338,6 +382,9 @@ TableSync is designed to support natural language human supervision through spee
 2. **Domain-Specific Vocabulary**: Custom dictionary boosts words like `"TableSync"`, `"bimanual"`, `"handoff"`, `"SO-101"`, and object identifiers (`"plate"`, `"spoon"`).
 3. **Safety Verification Gate**: Raw spoken text is never routed directly to actuator joint targets. It is parsed by the LLM into a validated `PlannerOutput` plan containing discrete subtask dependencies and evaluated against workspace reachability limits before execution.
 
+### Implementation
+The concrete implementation of the pipeline above lives in [`voice_transcriber.py`](file:///voice_transcriber.py). The single entry point is the async function `transcribe_spoken_command(audio_path=..., api_key=...) -> str`, which accepts a mono 16 kHz `.wav` file (or streams from the default microphone if `audio_path` is `None`), runs it through the Speechmatics RT WebSocket with the custom dictionary, and returns the final transcribed text. This string maps directly to `PlannerOutput.raw_instruction` — the reasoning layer's natural-language input.
+
 ---
 
 ## 10. Known Limitations & Hardening Roadmap
@@ -363,3 +410,11 @@ This section documents the formal production code review of the current implemen
 ### 5. Hidden Bugs & Edge Cases (Joint Limits & Collision Guards)
 * **Current Limitation**: In [`controller.py:148`](file:///controller.py#L148), IK joint updates clamp angles against `model.jnt_range`, but the roll angle is set directly to `q_sol[4] = target_roll` without checking if `target_roll` violates joint 5's physical limits. Furthermore, `move_arm` executes joint interpolation open-loop without monitoring contact forces; when arms collided, actuators drove full torque against the colliding linkage without raising a collision fault.
 * **Hardening Item**: Clamp roll targets against `self.model.jnt_range[joint_id]`; implement active contact-force monitoring in `step_sim` to abort motion upon uncommanded collision.
+
+### 6. Schema Validation & Planner Graph Safety (DAG Topological Checks)
+* **Current Limitation**: In `gemini_planner.py` / `contracts.py`, `PlannerOutput.model_validate()` validates datatypes and enum boundaries but does not enforce DAG acyclicity or boundary checks on `depends_on` (i.e. circular dependencies or forward-referencing indices $\ge N$ pass schema validation).
+* **Hardening Item**: Add a Pydantic `@model_validator(mode='after')` ensuring `0 <= depends_on < step_index` to guarantee strictly ordered, cycle-free task execution.
+
+### 7. Physical Threshold Verification in Execution Layer (Disclosed Technical Debt)
+* **Current Limitation**: In [`controller.py`](file:///controller.py), `TableSyncController.execute_subtask()` validates kinematic reachability (`solve_ik`), open-loop joint trajectory tracking, handoff dwell contact confirmation (`enforce_dwell`), and post-release contact clearance. However, `execute_subtask()` itself does **not** internally enforce physical task-completion thresholds (e.g. minimum vertical lift gain $\Delta z \ge 0.045\,\text{m}$, minimum tabletop displacement $\Delta xy \ge 0.050\,\text{m}$, or final settled resting elevation $z \le 0.205\,\text{m}$). These verification gates are currently implemented as external assertions within caller scripts ([`eval/run_full_pipeline.py`](file:///eval/run_full_pipeline.py) and [`run_tablesync_e2e.py`](file:///run_tablesync_e2e.py)). Consequently, if called in isolation without external harness checks, `execute_subtask()` could return `status=complete` even if an object slipped during lift. This remains real, disclosed technical debt.
+* **Hardening Item**: Embed physical post-condition verification contracts directly into `TableSyncController.execute_subtask()` (or specialized `SubtaskHandler` post-conditions), transitioning the controller from open-loop waypoint completion to closed-loop physical state verification where failure to meet physical thresholds natively yields `SubtaskStatus.FAILED`.

@@ -27,3 +27,22 @@ eval/openvino_models/*.bin
 # Logs & scratch
 *.log
 scratch/
+
+# Local pip installs
+.pip_packages/
+
+# Large raw video recordings (trimmed clips are committed instead)
+eval/seed*_pass_demo.mp4
+eval/seed*_dwell_refusal_demo.mp4
+eval/seed*_grasp_slip_demo.mp4
+
+# Redundant GIF (MP4 already tracked)
+eval/tablesync_e2e_demo.gif
+
+# Intermediate forensic debug frames (superseded by seed clip evidence)
+eval/frame4*_*.png
+eval/frame5*_*.png
+eval/frame6*_*.png
+eval/frame_a_*.png
+eval/frame_b_*.png
+eval/frame_c_*.png

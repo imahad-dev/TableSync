@@ -20,7 +20,7 @@ Features:
 
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Callable
 import numpy as np
 import mujoco
 import so101_nexus.kinematics as k
@@ -94,6 +94,15 @@ class TableSyncController:
         self.cmd_grip_a = 1.2
         self.cmd_grip_b = 1.2
 
+        # Optional continuous physics step callback (e.g. video rendering)
+        self.step_callback: Optional[Callable[[], None]] = None
+
+        # Gripper occupancy tracking: {ArmID.A: None, ArmID.B: None}
+        self._held_object: dict[ArmID, Optional[TargetObject]] = {
+            ArmID.A: None,
+            ArmID.B: None,
+        }
+
     def step_sim(self, n_steps: int = 1) -> None:
         """Step simulation while maintaining active commands on all 12 actuators."""
         for _ in range(n_steps):
@@ -103,6 +112,8 @@ class TableSyncController:
             self.data.ctrl[self.grip_act_a] = self.cmd_grip_a
             self.data.ctrl[self.grip_act_b] = self.cmd_grip_b
             mujoco.mj_step(self.model, self.data)
+            if self.step_callback is not None:
+                self.step_callback()
 
     def settle_scene(self, steps: int = 150) -> None:
         """Let bodies settle under gravity and position actuators."""
@@ -110,6 +121,7 @@ class TableSyncController:
         self.cmd_q_b = self.rest_q_b.copy()
         self.cmd_grip_a = 1.2
         self.cmd_grip_b = 1.2
+        self._held_object = {ArmID.A: None, ArmID.B: None}
         self.step_sim(steps)
 
     def solve_ik(self, arm: ArmID, target_pos: np.ndarray, target_roll: float = -1.57, max_iter: int = 300) -> tuple[np.ndarray, bool]:
@@ -253,6 +265,23 @@ class TableSyncController:
         if not waypoints:
             return ExecutionResult(step_index=subtask.step_index, status=SubtaskStatus.FAILED, error="No waypoints generated")
 
+        # Safety Interlock: if any waypoint commands the arm's gripper to open,
+        # ensure the arm is not currently holding a different object without an explicit PLACE step.
+        will_open_gripper = any(wp.gripper_ctrl > 0.0 for wp in waypoints)
+        currently_held = self._held_object[subtask.arm]
+        if will_open_gripper and currently_held is not None:
+            if not (subtask.action == ActionType.PLACE and subtask.target_object == currently_held):
+                subtask.status = SubtaskStatus.FAILED
+                target_desc = subtask.target_object.value if subtask.target_object else "none"
+                return ExecutionResult(
+                    step_index=subtask.step_index,
+                    status=SubtaskStatus.FAILED,
+                    error=(
+                        f"Safety Interlock: Arm {subtask.arm.value} is currently holding '{currently_held.value}' "
+                        f"and cannot open gripper for '{target_desc}' ({subtask.action.value}) without an explicit PLACE step."
+                    ),
+                )
+
         subtask.status = SubtaskStatus.IN_PROGRESS
 
         for wp in waypoints:
@@ -334,6 +363,25 @@ class TableSyncController:
                     status=SubtaskStatus.FAILED,
                     error=f"Arm still in contact with {target_str} after retreat: {remaining} contacts",
                 )
+
+        # Update occupancy tracking upon successful subtask completion
+        if subtask.action == ActionType.PICK:
+            target_str = "plate" if subtask.target_object == TargetObject.PLATE else "spoon"
+            if self.check_arm_object_contact(subtask.arm, target_str):
+                self._held_object[subtask.arm] = subtask.target_object
+        elif subtask.action == ActionType.PLACE:
+            self._held_object[subtask.arm] = None
+        elif subtask.action == ActionType.HANDOFF_RECEIVE:
+            self._held_object[ArmID.B] = None
+            if not self.check_arm_object_contact(ArmID.A, "spoon"):
+                self._held_object[ArmID.A] = None
+                subtask.status = SubtaskStatus.FAILED
+                return ExecutionResult(
+                    step_index=subtask.step_index,
+                    status=SubtaskStatus.FAILED,
+                    error="Arm A failed to maintain contact with spoon after lift",
+                )
+            self._held_object[ArmID.A] = TargetObject.SPOON
 
         subtask.status = SubtaskStatus.COMPLETE
         site_id = self.site_a if subtask.arm == ArmID.A else self.site_b

@@ -24,10 +24,16 @@ from __future__ import annotations
 import asyncio
 import io
 import os
+import warnings
 import wave
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+
+# speechmatics-python v5 emits a deprecation notice recommending the
+# split packages (speechmatics-rt / speechmatics-batch). We use the
+# unified package deliberately; suppress the warning.
+warnings.filterwarnings("ignore", message="speechmatics-python is deprecated")
 
 try:
     import speechmatics
@@ -36,10 +42,34 @@ try:
         TranscriptionConfig,
         AudioSettings,
     )
+    from websockets.exceptions import ConnectionClosedError
 except ImportError:
     raise ImportError(
         "speechmatics-python is required: pip install speechmatics-python"
     )
+
+# ---------------------------------------------------------------------------
+# Minimal .env loader (avoids python-dotenv dependency)
+# ---------------------------------------------------------------------------
+
+def _load_dotenv(env_path: Path | None = None) -> None:
+    """Load key=value pairs from a .env file into os.environ."""
+    if env_path is None:
+        env_path = Path(__file__).resolve().parent / ".env"
+    if not env_path.exists():
+        return
+    with open(env_path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip().strip("\"'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+
+_load_dotenv()
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -56,6 +86,8 @@ CUSTOM_DICTIONARY: list[dict] = [
     {"content": "bimanual",    "sounds_like": ["by manual", "bi manual"]},
     {"content": "handoff",     "sounds_like": ["hand off", "hand-off"]},
     {"content": "SO-101",      "sounds_like": ["S O one oh one", "so one oh one"]},
+    {"content": "Arm A",       "sounds_like": ["arm a", "arm-a", "armay", "arm ay"]},
+    {"content": "Arm B",       "sounds_like": ["arm b", "arm-b", "army", "arm bee"]},
     {"content": "plate"},
     {"content": "spoon"},
     {"content": "gripper"},
@@ -154,7 +186,12 @@ class VoiceTranscriber:
         if text.strip():
             self._finals.append(text.strip())
             for w in msg.get("results", []):
-                conf = w.get("confidence", 0.0)
+                # Speechmatics nests confidence under alternatives
+                alts = w.get("alternatives", [])
+                if alts:
+                    conf = alts[0].get("confidence", 0.0)
+                else:
+                    conf = w.get("confidence", 0.0)
                 if conf > 0:
                     self._confidences.append(conf)
 
@@ -192,22 +229,22 @@ class VoiceTranscriber:
 
         audio_settings = self._build_audio_settings(sample_rate)
 
-        # Stream the file in chunks
-        chunk_size = int(sample_rate * CHUNK_DURATION_S) * sampwidth
+        # SDK v5 ws.run() expects an IOBase file-like with .read()
         stream = io.BytesIO(audio_data)
 
-        async def audio_generator():
-            while True:
-                chunk = stream.read(chunk_size)
-                if not chunk:
-                    break
-                yield chunk
-
-        await ws.run(
-            audio_generator(),
-            self._build_config(),
-            audio_settings,
-        )
+        try:
+            await ws.run(
+                stream,
+                self._build_config(),
+                audio_settings,
+            )
+        except ConnectionClosedError as e:
+            if "not_authorised" in str(e) or (hasattr(e, 'code') and e.code == 4001):
+                raise RuntimeError(
+                    f"Speechmatics rejected the API key (WebSocket 4001 not_authorised). "
+                    f"Set a valid SPEECHMATICS_API_KEY environment variable."
+                ) from e
+            raise
 
         return self._build_result()
 
@@ -277,6 +314,13 @@ class VoiceTranscriber:
             )
         except KeyboardInterrupt:
             pass
+        except ConnectionClosedError as e:
+            if "not_authorised" in str(e) or (hasattr(e, 'code') and e.code == 4001):
+                raise RuntimeError(
+                    f"Speechmatics rejected the API key (WebSocket 4001 not_authorised). "
+                    f"Set a valid SPEECHMATICS_API_KEY environment variable."
+                ) from e
+            raise
 
         return self._build_result()
 
@@ -348,7 +392,7 @@ if __name__ == "__main__":
         print(f"Transcribing file: {path}")
         text = asyncio.run(transcribe_spoken_command(audio_path=path))
     else:
-        print("No file provided — streaming from microphone (Ctrl+C to stop)...")
+        print("No file provided -- streaming from microphone (Ctrl+C to stop)...")
         text = asyncio.run(transcribe_spoken_command(duration_s=10.0))
 
-    print(f"\n→ Planner input: \"{text}\"")
+    print(f"\n=> Planner input: \"{text}\"")
