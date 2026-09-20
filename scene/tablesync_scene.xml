@@ -1,5 +1,6 @@
+<?xml version='1.0' encoding='utf-8'?>
 <mujoco model="tablesync_dual_arm">
-  <compiler angle="radian" meshdir="C:\Users\MSI\AppData\Local\Programs\Python\Python313\Lib\site-packages\so101_nexus\assets\SO101_menagerie\assets" autolimits="true" />
+  <compiler angle="radian" meshdir="assets" autolimits="true" texturedir="assets" />
   <option integrator="implicitfast" timestep="0.005" cone="elliptic" iterations="10" ls_iterations="20" impratio="10" />
   <visual>
     <scale contactwidth="0.1" contactheight="0.05" forcewidth="0.02" framelength="0.75" framewidth="0.025" camera="0.2" />
@@ -63,20 +64,29 @@
     <material name="wrist_roll_pitch_so101_v2_material" rgba="1 0.82 0.12 1" />
     <material name="wrist_roll_follower_so101_v1_material" rgba="1 0.82 0.12 1" />
     <material name="moving_jaw_so101_v1_material" rgba="1 0.82 0.12 1" />
+    <mesh name="plate_mesh" file="plate_realistic.obj" />
+    <mesh name="spoon_mesh" file="spoon_realistic_v2.obj" />
+    <texture name="skybox" type="skybox" builtin="gradient" rgb1="0.55 0.6 0.68" rgb2="0.12 0.13 0.18" width="512" height="512" />
+    <texture name="wood_table" type="2d" file="wood_table_texture.png" />
+    <material name="wood_table_mat" texture="wood_table" texrepeat="3 3" specular="0.3" shininess="0.2" reflectance="0.05" />
+    <material name="ceramic_plate_mat" rgba="0.97 0.96 0.93 1" specular="0.7" shininess="0.6" reflectance="0.1" />
+    <material name="steel_spoon_mat" rgba="0.72 0.73 0.75 1" specular="0.55" shininess="0.5" reflectance="0.25" />
   </asset>
   <worldbody>
     <body name="table" pos="0 0.06 0">
-      <geom type="box" size="0.32 0.22 0.02" pos="0 0 0.18" rgba="0.55 0.4 0.25 1" />
+      <geom type="box" size="0.32 0.22 0.02" pos="0 0 0.18" material="wood_table_mat" />
     </body>
     <body name="plate" pos="-0.08 0.06 0.203">
       <joint name="plate_free" type="free" />
-      <geom name="plate_dish" type="cylinder" size="0.050 0.003" pos="0 0 0.003" rgba="0.9 0.9 0.9 1" mass="0.05" friction="1.5 0.01 0.001" />
-      <geom name="plate_rim_edge" type="box" size="0.005 0.015 0.015" pos="-0.045 0 0.015" rgba="0.85 0.85 0.85 1" mass="0.02" condim="6" friction="3.0 0.05 0.005" />
+      <geom name="plate_dish" type="cylinder" size="0.050 0.003" pos="0 0 0.003" rgba="1 1 1 0" mass="0.05" friction="1.5 0.01 0.001" />
+      <geom name="plate_rim_edge" type="box" size="0.005 0.015 0.015" pos="-0.045 0 0.015" rgba="1 1 1 0" mass="0.02" condim="6" friction="3.0 0.05 0.005" />
+      <geom name="plate_visual" type="mesh" mesh="plate_mesh" pos="0 0 0.001" material="ceramic_plate_mat" contype="0" conaffinity="0" mass="0" />
     </body>
     <body name="spoon" pos="0.08 0.06 0.203">
       <joint name="spoon_free" type="free" />
-      <geom name="spoon_base" type="cylinder" size="0.018 0.003" pos="0 0 0.003" rgba="0.7 0.7 0.75 1" mass="0.04" friction="2.0 0.01 0.001" />
-      <geom name="spoon_handle" type="capsule" size="0.008 0.030" pos="0 0 0.033" rgba="0.65 0.65 0.7 1" mass="0.02" condim="6" friction="3.0 0.05 0.005" />
+      <geom name="spoon_base" type="cylinder" size="0.018 0.003" pos="0 0 0.003" rgba="1 1 1 0" mass="0.04" friction="2.0 0.01 0.001" />
+      <geom name="spoon_handle" type="capsule" size="0.008 0.030" pos="0 0 0.033" rgba="1 1 1 0" mass="0.02" condim="6" friction="3.0 0.05 0.005" />
+      <geom name="spoon_visual" type="mesh" mesh="spoon_mesh" pos="0 0 0.001" euler="0 -1.5708 0" material="steel_spoon_mat" contype="0" conaffinity="0" mass="0" />
     </body>
     <light name="scene_light" pos="0.0 -0.05 0.95" dir="0 0.05 -1" diffuse="0.8 0.8 0.8" specular="0.2 0.2 0.2" directional="false" />
     <camera name="overhead" pos="0 -0.05 0.85" euler="0 0 0" fovy="60" mode="fixed" />

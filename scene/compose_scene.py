@@ -29,11 +29,18 @@ from __future__ import annotations
 import copy
 import xml.etree.ElementTree as ET
 from pathlib import Path
+import shutil
 
 import so101_nexus as s101
 
 SOURCE_XML = s101.get_so101_mujoco_model_path()
-OUT_XML = Path(__file__).resolve().parent / "tablesync_scene.xml"
+SCENE_DIR = Path(__file__).resolve().parent
+OUT_XML = SCENE_DIR / "tablesync_scene.xml"
+
+# Realistic visual asset paths
+PLATE_OBJ = (SCENE_DIR / "plate_realistic.obj").resolve()
+SPOON_OBJ = (SCENE_DIR / "spoon_realistic_v2.obj").resolve()
+TABLE_TEX = (SCENE_DIR / "wood_table_texture.png").resolve()
 
 # First-guess base poses. SO-101 is a short-reach desktop arm; bases are
 # placed close together so the handoff point sits inside both workspaces.
@@ -71,18 +78,56 @@ def build_scene() -> ET.ElementTree:
 
     out_root = ET.Element("mujoco", {"model": "tablesync_dual_arm"})
 
-    # Shared, unmodified sections: compiler / option / visual / default / asset
+    # Ensure scene/assets directory has all mesh and texture assets for portability
+    assets_dir = SCENE_DIR / "assets"
+    assets_dir.mkdir(exist_ok=True)
+    src_assets_dir = Path(SOURCE_XML).parent / "assets"
+    if src_assets_dir.exists():
+        for stl in src_assets_dir.glob("*.stl"):
+            dest_stl = assets_dir / stl.name
+            if not dest_stl.exists():
+                shutil.copy2(stl, dest_stl)
+
+    for custom_asset in (PLATE_OBJ, SPOON_OBJ, TABLE_TEX):
+        dest_custom = assets_dir / custom_asset.name
+        if not dest_custom.exists():
+            shutil.copy2(custom_asset, dest_custom)
+
+    # Shared sections: compiler / option / visual / default / asset
     for tag in ("compiler", "option", "visual", "default", "asset"):
         section = src_root.find(tag)
         if section is not None:
             section_copy = copy.deepcopy(section)
             if tag == "compiler":
-                # meshdir is relative to the XML's own directory in MuJoCo.
-                # Point it at the source assets dir absolutely so the output
-                # file can live anywhere.
-                abs_meshdir = (Path(SOURCE_XML).parent / section_copy.attrib.get("meshdir", "assets")).resolve()
-                section_copy.attrib["meshdir"] = str(abs_meshdir)
+                # Use portable relative paths inside scene/
+                section_copy.attrib["meshdir"] = "assets"
+                section_copy.attrib["texturedir"] = "assets"
             out_root.append(section_copy)
+
+    # Augment asset section with realistic visual meshes, textures, materials, and skybox
+    asset_section = out_root.find("asset")
+    if asset_section is not None:
+        ET.SubElement(asset_section, "mesh", {"name": "plate_mesh", "file": "plate_realistic.obj"})
+        ET.SubElement(asset_section, "mesh", {"name": "spoon_mesh", "file": "spoon_realistic_v2.obj"})
+        ET.SubElement(asset_section, "texture", {
+            "name": "skybox", "type": "skybox", "builtin": "gradient",
+            "rgb1": "0.55 0.6 0.68", "rgb2": "0.12 0.13 0.18", "width": "512", "height": "512"
+        })
+        ET.SubElement(asset_section, "texture", {
+            "name": "wood_table", "type": "2d", "file": "wood_table_texture.png"
+        })
+        ET.SubElement(asset_section, "material", {
+            "name": "wood_table_mat", "texture": "wood_table", "texrepeat": "3 3",
+            "specular": "0.3", "shininess": "0.2", "reflectance": "0.05"
+        })
+        ET.SubElement(asset_section, "material", {
+            "name": "ceramic_plate_mat", "rgba": "0.97 0.96 0.93 1",
+            "specular": "0.7", "shininess": "0.6", "reflectance": "0.1"
+        })
+        ET.SubElement(asset_section, "material", {
+            "name": "steel_spoon_mat", "rgba": "0.72 0.73 0.75 1",
+            "specular": "0.55", "shininess": "0.5", "reflectance": "0.25"
+        })
 
     worldbody = ET.SubElement(out_root, "worldbody")
 
@@ -90,31 +135,46 @@ def build_scene() -> ET.ElementTree:
     table = ET.SubElement(worldbody, "body", {"name": "table", "pos": "0 0.06 0"})
     ET.SubElement(table, "geom", {
         "type": "box", "size": "0.32 0.22 0.02", "pos": "0 0 0.18",
-        "rgba": "0.55 0.4 0.25 1",
+        "material": "wood_table_mat",
     })
 
     # Plate — free body with a 10mm graspable rim lip
     plate = ET.SubElement(worldbody, "body", {"name": "plate", "pos": "-0.08 0.06 0.203"})
     ET.SubElement(plate, "joint", {"name": "plate_free", "type": "free"})
+    # Existing collision geoms kept identical for physics, set to invisible rgba="1 1 1 0"
     ET.SubElement(plate, "geom", {
         "name": "plate_dish", "type": "cylinder", "size": "0.050 0.003", "pos": "0 0 0.003",
-        "rgba": "0.9 0.9 0.9 1", "mass": "0.05", "friction": "1.5 0.01 0.001",
+        "rgba": "1 1 1 0", "mass": "0.05", "friction": "1.5 0.01 0.001",
     })
     ET.SubElement(plate, "geom", {
         "name": "plate_rim_edge", "type": "box", "size": "0.005 0.015 0.015", "pos": "-0.045 0 0.015",
-        "rgba": "0.85 0.85 0.85 1", "mass": "0.02", "condim": "6", "friction": "3.0 0.05 0.005",
+        "rgba": "1 1 1 0", "mass": "0.02", "condim": "6", "friction": "3.0 0.05 0.005",
+    })
+    # Non-colliding visual mesh offset 1mm above bottom surface (z=0.000) with explicit mass="0"
+    ET.SubElement(plate, "geom", {
+        "name": "plate_visual", "type": "mesh", "mesh": "plate_mesh",
+        "pos": "0 0 0.001", "material": "ceramic_plate_mat",
+        "contype": "0", "conaffinity": "0", "mass": "0",
     })
 
     # Spoon — free body, stable base with 16mm diameter handle
     spoon = ET.SubElement(worldbody, "body", {"name": "spoon", "pos": "0.08 0.06 0.203"})
     ET.SubElement(spoon, "joint", {"name": "spoon_free", "type": "free"})
+    # Existing collision geoms kept identical for physics, set to invisible rgba="1 1 1 0"
     ET.SubElement(spoon, "geom", {
         "name": "spoon_base", "type": "cylinder", "size": "0.018 0.003", "pos": "0 0 0.003",
-        "rgba": "0.7 0.7 0.75 1", "mass": "0.04", "friction": "2.0 0.01 0.001",
+        "rgba": "1 1 1 0", "mass": "0.04", "friction": "2.0 0.01 0.001",
     })
     ET.SubElement(spoon, "geom", {
         "name": "spoon_handle", "type": "capsule", "size": "0.008 0.030", "pos": "0 0 0.033",
-        "rgba": "0.65 0.65 0.7 1", "mass": "0.02", "condim": "6", "friction": "3.0 0.05 0.005",
+        "rgba": "1 1 1 0", "mass": "0.02", "condim": "6", "friction": "3.0 0.05 0.005",
+    })
+    # Non-colliding visual mesh offset 1mm above bottom surface (z=0.000) with explicit mass="0"
+    # euler="0 -1.5708 0" aligns the handle vertically with the bowl at the top
+    ET.SubElement(spoon, "geom", {
+        "name": "spoon_visual", "type": "mesh", "mesh": "spoon_mesh",
+        "pos": "0 0 0.001", "euler": "0 -1.5708 0", "material": "steel_spoon_mat",
+        "contype": "0", "conaffinity": "0", "mass": "0",
     })
 
     # Main scene illumination — can be perturbed in robustness harness
@@ -166,7 +226,7 @@ def build_scene() -> ET.ElementTree:
 if __name__ == "__main__":
     tree = build_scene()
     ET.indent(tree, space="  ")
-    tree.write(OUT_XML, encoding="unicode" if False else None, xml_declaration=False)
+    tree.write(OUT_XML, encoding="utf-8", xml_declaration=True)
     print(f"Wrote {OUT_XML}")
 
     # Load-test: does MuJoCo actually accept this composed model?

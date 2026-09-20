@@ -24,6 +24,7 @@ import warnings
 from pathlib import Path
 
 import numpy as np
+import cv2
 
 # Ensure project root is on path
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -250,10 +251,36 @@ def run_e2e(audio_path: str | Path | None = None):
     sim_dt = model.opt.timestep
     frame_interval = 1.0 / VIDEO_FPS
     last_render_time = [data.time]
+    current_phase = ["Init: Settling scene"]
 
     def render_callback():
         if (data.time - last_render_time[0]) >= (frame_interval - 1e-6):
-            recorder.add_frame(angled_renderer.render(data))
+            raw_frame = angled_renderer.render(data)
+            f_idx = len(recorder.frames)
+            t = data.time
+            p_pos = data.xpos[plate_id]
+            s_pos = data.xpos[spoon_id]
+            a_plate_con = controller.count_contacts("armA", "plate")
+            a_spoon_con = controller.count_contacts("armA", "spoon")
+            b_spoon_con = controller.count_contacts("armB", "spoon")
+            sp_pl_con = controller.count_contacts("spoon", "plate")
+
+            line1 = f"Frame: {f_idx:03d} | t={t:.2f}s | {current_phase[0]}"
+            line2 = f"Plate pos: [{p_pos[0]:.4f}, {p_pos[1]:.4f}, {p_pos[2]:.4f}]"
+            line3 = f"Spoon pos: [{s_pos[0]:.4f}, {s_pos[1]:.4f}, {s_pos[2]:.4f}]"
+            line4 = f"Contacts: armA_pl={a_plate_con} armB_sp={b_spoon_con} armA_sp={a_spoon_con} sp_pl={sp_pl_con}"
+
+            frame = raw_frame.copy()
+            overlay = frame.copy()
+            cv2.rectangle(overlay, (10, 10), (560, 118), (0, 0, 0), -1)
+            frame = cv2.addWeighted(overlay, 0.65, frame, 0.35, 0)
+
+            cv2.putText(frame, line1, (20, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 0), 2, cv2.LINE_AA)
+            cv2.putText(frame, line2, (20, 56), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (0, 255, 0), 2, cv2.LINE_AA)
+            cv2.putText(frame, line3, (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (0, 255, 0), 2, cv2.LINE_AA)
+            cv2.putText(frame, line4, (20, 104), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 2, cv2.LINE_AA)
+
+            recorder.add_frame(frame)
             last_render_time[0] = data.time
 
     # Record initial state (1 second)
@@ -264,6 +291,7 @@ def run_e2e(audio_path: str | Path | None = None):
 
     step_end_frames = {}
     for subtask in plan.subtasks:
+        current_phase[0] = f"Step {subtask.step_index}: [{subtask.arm.value}] {subtask.action.value} -> {subtask.target_object.value}"
         print(f"\nExecuting Step {subtask.step_index}: "
               f"[{subtask.arm.value}] {subtask.action.value} -> {subtask.target_object.value}")
 
@@ -339,6 +367,7 @@ def run_e2e(audio_path: str | Path | None = None):
             assert rel_distance_xy <= 0.100, f"Spoon placed too far from plate: {rel_distance_xy} m"
 
     # Record final resting state (2 seconds)
+    current_phase[0] = "Final Hold: Settled on Tabletop"
     controller.step_sim(int(2.0 / sim_dt))
     final_hold_frame = len(recorder.frames) - 1
     print(f"\n[EventTrace] Final 2-second hold completed at video frame {final_hold_frame}")
