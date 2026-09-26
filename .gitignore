@@ -46,3 +46,7 @@ eval/frame6*_*.png
 eval/frame_a_*.png
 eval/frame_b_*.png
 eval/frame_c_*.png
+
+# Continuous diagnostic frame dumps & spotcheck frames
+eval/diagnostics/
+eval/spotcheck_*.png

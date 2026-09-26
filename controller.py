@@ -102,6 +102,7 @@ class TableSyncController:
             ArmID.A: None,
             ArmID.B: None,
         }
+        self.current_waypoint_name: str = ""
 
     def step_sim(self, n_steps: int = 1) -> None:
         """Step simulation while maintaining active commands on all 12 actuators."""
@@ -238,19 +239,20 @@ class TableSyncController:
         elif action == ActionType.HANDOFF_RECEIVE and target_obj == TargetObject.HANDOFF_POINT:
             spoon_held = self.data.geom_xpos[self.spoon_handle_id].copy()
             grasp_pt = spoon_held + self.offset_arm_a
-            # Staging waypoint prevents arm linkages from colliding during approach
-            waypoints.append(Waypoint("ho_stage", arm, grasp_pt + np.array([-0.05, 0.0, 0.04]), gripper_ctrl=1.2, n_interp=80))
-            waypoints.append(Waypoint("ho_grasp", arm, grasp_pt, gripper_ctrl=1.2, n_interp=60))
+            # Staging waypoint prevents swept jaw geometry from colliding during approach
+            # Keeps gripper closed (0.0) during staging and approaches with wider clearance [-0.08, 0.0, 0.06]
+            waypoints.append(Waypoint("ho_stage", arm, grasp_pt + np.array([-0.08, 0.0, 0.06]), gripper_ctrl=0.0, n_interp=60, hold_steps=10))
+            waypoints.append(Waypoint("ho_grasp", arm, grasp_pt, gripper_ctrl=1.2, n_interp=60, hold_steps=10))
             waypoints.append(Waypoint("ho_clamp_dwell", arm, grasp_pt, gripper_ctrl=-0.1745, n_interp=1, hold_steps=40, enforce_dwell=True))
-            waypoints.append(Waypoint("ho_lift", arm, grasp_pt + np.array([0, 0, 0.080]), gripper_ctrl=-0.1745, n_interp=80))
+            waypoints.append(Waypoint("ho_lift", arm, grasp_pt + np.array([0, 0, 0.060]), gripper_ctrl=-0.1745, n_interp=40, hold_steps=10))
 
         elif action == ActionType.PLACE and target_obj == TargetObject.SPOON:
             # Place spoon beside the placed plate on the table at [0.015, 0.130, 0.225]
             spoon_place_target = np.array([0.015, 0.130, 0.225])
-            waypoints.append(Waypoint("spoon_place_above", arm, spoon_place_target + np.array([0, 0, 0.070]), gripper_ctrl=-0.1745, n_interp=80))
-            waypoints.append(Waypoint("spoon_place_down", arm, spoon_place_target, gripper_ctrl=-0.1745, n_interp=80))
-            waypoints.append(Waypoint("spoon_release", arm, spoon_place_target, gripper_ctrl=1.2, n_interp=1, hold_steps=60))
-            waypoints.append(Waypoint("spoon_retreat", arm, spoon_place_target + np.array([0, 0, 0.090]), gripper_ctrl=1.2, n_interp=60))
+            waypoints.append(Waypoint("spoon_place_above", arm, spoon_place_target + np.array([0, 0, 0.060]), gripper_ctrl=-0.1745, n_interp=50, hold_steps=10))
+            waypoints.append(Waypoint("spoon_place_down", arm, spoon_place_target, gripper_ctrl=-0.1745, n_interp=50, hold_steps=10))
+            waypoints.append(Waypoint("spoon_release", arm, spoon_place_target, gripper_ctrl=1.2, n_interp=1, hold_steps=50))
+            waypoints.append(Waypoint("spoon_retreat", arm, spoon_place_target + np.array([0, 0, 0.090]), gripper_ctrl=1.2, n_interp=40, hold_steps=10))
 
         elif action == ActionType.RETREAT:
             site_id = self.site_a if arm == ArmID.A else self.site_b
@@ -285,6 +287,7 @@ class TableSyncController:
         subtask.status = SubtaskStatus.IN_PROGRESS
 
         for wp in waypoints:
+            self.current_waypoint_name = wp.name
             target_pos = wp.target_pos.copy()
             q_target, ok = self.solve_ik(wp.arm, target_pos, target_roll=wp.target_roll)
             if not ok:
@@ -332,11 +335,11 @@ class TableSyncController:
                 # Grip confirmed on Arm A -> Arm B releases spoon
                 handoff_state.phase = HandoffPhase.RELEASING
                 self.cmd_grip_b = 1.2
-                self.step_sim(60)
+                self.step_sim(50)
 
                 # Arm B retreats to rest pose
                 handoff_state.phase = HandoffPhase.RETREATING
-                self.move_arm(ArmID.B, self.rest_q_b, grip_val=1.2, steps=80)
+                self.move_arm(ArmID.B, self.rest_q_b, grip_val=1.2, steps=60, hold_steps=10)
 
                 # CRITICAL VERIFICATION: Confirm zero contacts between Arm B and spoon after release
                 b_contacts = self.count_contacts("armB", "spoon")
@@ -350,8 +353,9 @@ class TableSyncController:
 
         # If subtask completes and was a place action, return arm to rest
         if subtask.action == ActionType.PLACE:
+            self.current_waypoint_name = "post_place_retreat"
             rest_q = self.rest_q_a if subtask.arm == ArmID.A else self.rest_q_b
-            self.move_arm(subtask.arm, rest_q, grip_val=1.2, steps=80)
+            self.move_arm(subtask.arm, rest_q, grip_val=1.2, steps=60, hold_steps=10)
 
             # Confirm zero contacts with placed object after retreat
             target_str = "plate" if subtask.target_object == TargetObject.PLATE else "spoon"

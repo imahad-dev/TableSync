@@ -57,7 +57,8 @@ from contracts import (
 # Gemini configuration
 # ---------------------------------------------------------------------------
 
-GEMINI_MODEL = "gemini-3.6-flash"
+FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-3.5-flash", "gemini-3.6-flash"]
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 
 SYSTEM_PROMPT = """\
 You are the planning module of TableSync, a bimanual robotic table-clearing system.
@@ -147,16 +148,6 @@ def generate_plan(
 
     genai.configure(api_key=key)
 
-    model = genai.GenerativeModel(
-        model_name=GEMINI_MODEL,
-        system_instruction=SYSTEM_PROMPT,
-        generation_config=genai.GenerationConfig(
-            response_mime_type="application/json",
-            response_schema=PLANNER_OUTPUT_SCHEMA,
-            temperature=0.1,
-        ),
-    )
-
     pil_image = _frame_to_pil(camera_frame)
 
     user_prompt = (
@@ -165,15 +156,36 @@ def generate_plan(
         "Generate the execution plan as a PlannerOutput JSON."
     )
 
-    print("[GeminiPlanner] Sending to Gemini...")
-    print(f"  Model: {GEMINI_MODEL}")
-    print(f"  Instruction: \"{instruction_text}\"")
-    print(f"  Image size: {pil_image.size}")
+    models_to_try = [GEMINI_MODEL] + [m for m in FALLBACK_MODELS if m != GEMINI_MODEL]
+    raw_text = None
+    last_err = None
 
-    response = model.generate_content([user_prompt, pil_image])
+    for candidate in models_to_try:
+        try:
+            print("[GeminiPlanner] Sending to Gemini...")
+            print(f"  Model: {candidate}")
+            print(f"  Instruction: \"{instruction_text}\"")
+            print(f"  Image size: {pil_image.size}")
 
-    raw_text = response.text
-    print(f"\n[GeminiPlanner] Raw Gemini response:\n{raw_text}")
+            model = genai.GenerativeModel(
+                model_name=candidate,
+                system_instruction=SYSTEM_PROMPT,
+                generation_config=genai.GenerationConfig(
+                    response_mime_type="application/json",
+                    response_schema=PLANNER_OUTPUT_SCHEMA,
+                    temperature=0.1,
+                ),
+            )
+            response = model.generate_content([user_prompt, pil_image])
+            raw_text = response.text
+            print(f"\n[GeminiPlanner] Raw Gemini response (via {candidate}):\n{raw_text}")
+            break
+        except Exception as e:
+            print(f"[GeminiPlanner] Warning: Call to {candidate} failed ({e}), trying next candidate...")
+            last_err = e
+
+    if raw_text is None:
+        raise RuntimeError(f"All Gemini models failed. Last error: {last_err}") from last_err
 
     # Parse and validate against Pydantic model
     try:

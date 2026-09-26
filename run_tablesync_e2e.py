@@ -252,8 +252,15 @@ def run_e2e(audio_path: str | Path | None = None):
     frame_interval = 1.0 / VIDEO_FPS
     last_render_time = [data.time]
     current_phase = ["Init: Settling scene"]
+    min_step5_transit_contacts = [float("inf")]
+    current_subtask_idx = [-1]
 
     def render_callback():
+        # Continuous Invariant: during Step 5 transit, arm A must hold the spoon continuously
+        if current_subtask_idx[0] == 5 and controller.current_waypoint_name in ("spoon_place_above", "spoon_place_down"):
+            current_a_sp = controller.count_contacts("armA", "spoon")
+            min_step5_transit_contacts[0] = min(min_step5_transit_contacts[0], current_a_sp)
+
         if (data.time - last_render_time[0]) >= (frame_interval - 1e-6):
             raw_frame = angled_renderer.render(data)
             f_idx = len(recorder.frames)
@@ -291,6 +298,7 @@ def run_e2e(audio_path: str | Path | None = None):
 
     step_end_frames = {}
     for subtask in plan.subtasks:
+        current_subtask_idx[0] = subtask.step_index
         current_phase[0] = f"Step {subtask.step_index}: [{subtask.arm.value}] {subtask.action.value} -> {subtask.target_object.value}"
         print(f"\nExecuting Step {subtask.step_index}: "
               f"[{subtask.arm.value}] {subtask.action.value} -> {subtask.target_object.value}")
@@ -358,9 +366,14 @@ def run_e2e(audio_path: str | Path | None = None):
             rel_distance_xy = np.linalg.norm(rel_vector[:2])
             print(f"  [Metric] Final placed spoon pos: {final_spoon_pos.tolist()}")
             print(f"  [Metric] Spoon settled z: {final_spoon_pos[2]:.4f} m | Threshold: <= 0.220 m")
+            print(f"  [Metric] Min Arm A spoon contacts during transit: {min_step5_transit_contacts[0]} | Threshold: > 0")
             print(f"  [Metric] Arm A contacts after release: {a_spoon_contacts} | Threshold: == 0")
             print(f"  [Metric] Spoon-to-plate contacts: {spoon_plate_contacts} | Threshold: == 0")
             print(f"  [Metric] Distance to placed plate: {rel_distance_xy:.4f} m ({rel_distance_xy*100:.2f} cm) | Threshold: <= 0.100 m")
+            assert min_step5_transit_contacts[0] > 0, (
+                f"Continuous invariant violated: Arm A dropped spoon during transit before deliberate release "
+                f"(min contacts = {min_step5_transit_contacts[0]})"
+            )
             assert final_spoon_pos[2] <= 0.220, f"Spoon not resting on table: z={final_spoon_pos[2]}"
             assert a_spoon_contacts == 0, f"Arm A still contacting spoon: {a_spoon_contacts}"
             assert spoon_plate_contacts == 0, f"Spoon is contacting plate: {spoon_plate_contacts}"
